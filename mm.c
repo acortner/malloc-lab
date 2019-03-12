@@ -24,13 +24,13 @@
  ********************************************************/
 team_t team = {
     /* First member's full name */
-    "",
+    "Andrew Cortner",
     /* First member's NetID */
-    "",
+    "ajc4628",
     /* Second member's full name (leave blank if none) */
-    "",
+    "Karen Bao",
     /* Second member's NetID */
-    ""
+    "kzb2826"
 };
 
 /* single word (4) or double word (8) alignment */
@@ -42,11 +42,53 @@ team_t team = {
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
+/* basic constants and macros */
+#define WSIZE 4
+#define DSIZE 8
+#define CHUNKSIZE (1<<12)
+
+#define MAX(x, y) ((x) > (y)? (x) : (y))
+
+/* pack a size and allocated bit into a word */
+#define PACK(size, alloc) ((size) | (alloc))
+
+/* read and write a word at address p */
+#define GET(p) (*(unsigned int *)(p))
+#define PUT(p, val) (*(unsigned int *)(p) = (val))
+
+/* read the size and allocated fields from address p */
+#define GET_SIZE(p) (GET(p) & ~0x7)
+#define GET_ALLOC(p) (GET(p) & 0x1)
+
+/* given block pointer bp, compute address of its header and footer */
+#define HDRP(bp) ((char *)(bp) - WSIZE)
+#define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE)
+
+/* given block pointer bp, compute address of next and previous blocks */
+#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
+#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
+
+static char *mm_heap;
+static char *mm_brk;
+static char *mm_max_address;
+static char *heap_listp;
+
 /* 
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
+    mm_heap = (char *)Malloc(MAX_HEAP);
+    mm_brk = (char *)mm_heap;
+    mm_max_address = (char *)(mm_heap + MAX_HEAP);
+    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) {
+        return -1;
+    }
+    PUT(heap_listp, 0);
+    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));
+    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));
+    PUT(heap_listp + (3*WSIZE), PACK(0, 1));
+    heap_listp += (2*WSIZE);
     return 0;
 }
 
@@ -71,6 +113,32 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
+    size_t size = GET_SIZE(HDRP(ptr));
+    PUT(HDRP(ptr), PACK(size, 0));
+    PUT(FTRP(ptr), PACK(size, 0));
+    
+    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(ptr)));
+    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
+    size = GET_SIZE(HDRP(ptr));
+    
+    if (prev_alloc && next_alloc) {
+        return ptr;
+    } else if (prev_alloc && !next_alloc) {
+        size += GET_SIZE(HDRP(NEXT_BLKP(ptr)));
+        PUT(HDRP(ptr), PACK(size, 0));
+        PUT(FTRP(ptr), PACK(size, 0));
+    } else if (!prev_alloc && next_alloc) {
+        size += GET_SIZE(HDRP(PREV_BLKP(ptr)));
+        PUT(FTRP(ptr), PACK(size, 0));
+        PUT(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
+        ptr = PREV_BLKP(ptr);
+    } else {
+        size += GET_SIZE(HDRP(PREV_BLKP(ptr))) + GET_SIZE(FTRP(NEXT_BLKP(ptr)));
+        PUT(HDRP(PREV_BLKP(ptr)), PACK(size, 0));
+        PUT(FTRP(NEXT_BLKP(ptr)), PACK(size, 0));
+        ptr = PREV_BLKP(ptr);
+    }
+    return ptr;
 }
 
 /*
