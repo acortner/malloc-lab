@@ -68,58 +68,59 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
-static char *mm_heap;
-static char *mm_brk;
-static char *mm_max_address;
 static char *heap_listp;
 
-/*
- * mm_init - initialize the malloc package.
- */
-int mm_init(void)
-{
-    mm_heap = (char *)Malloc(MAX_HEAP);
-    mm_brk = (char *)mm_heap;
-    mm_max_address = (char *)(mm_heap + MAX_HEAP);
-    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) {
-        return -1;
-    }
-    PUT(heap_listp, 0);
-    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));
-    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));
-    PUT(heap_listp + (3*WSIZE), PACK(0, 1));
-    heap_listp += (2*WSIZE);
-    return 0;
-}
-
-/*
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
- */
-void *mm_malloc(size_t size)
-{
-    int newsize = ALIGN(size + SIZE_T_SIZE);
-    void *p = mem_sbrk(newsize);
-    if (p == (void *)-1)
-        return NULL;
-    else {
-        *(size_t *)p = size;
-        return (void *)((char *)p + SIZE_T_SIZE);
-    }
-}
-
-/*
- * mm_free - Freeing a block does nothing.
- */
-void mm_free(void *ptr)
-{
-    size_t size = GET_SIZE(HDRP(ptr));
-    PUT(HDRP(ptr), PACK(size, 0));
-    PUT(FTRP(ptr), PACK(size, 0));
+static void *extend_heap(size_t words) {
+    char *ptr;
+    size_t size;
     
+    /* allocate even number of words to maintain alignment */
+    size = (words % 2) ? (words + 1) * WSIZE : words * WSIZE;
+    if ((long)(ptr = mem_sbrk(size)) == -1) {
+        return NULL;
+    }
+    
+    /* initialize  free block header/footer and epilogue header */
+    PUT(HDRP(ptr), PACK(size, 0)); /* free block header */
+    PUT(FTRP(ptr), PACK(size, 0)); /* free block footer */
+    PUT(HDRP(NEXT_BLKP(ptr)), PACK(0, 1)); /* new epilogue header */
+    
+    /* coalesce if the previous block was free */
+    return coalesce(ptr);
+}
+
+static void *find_fit(size_t asize)
+{
+    /* first-fit search */
+    void *ptr;
+    for (ptr = heap_listp; GET_SIZE(HDRP(ptr)) > 0; ptr = NEXT_BLKP(ptr)) {
+        if (!GET_ALLOC(HDRP(ptr)) && (asize <= GET_SIZE(HDRP(ptr)))) {
+            return ptr;
+        }
+    }
+    return NULL; /* no fit */
+}
+
+static void place(void *ptr, size_t asize)
+{
+    size_t csize = GET_SIZE(HDRP(ptr));
+    
+    if ((csize - asize) >= (2 * DSIZE)) {
+        PUT(HDRP(ptr), PACK(asize, 1));
+        PUT(FTRP(ptr), PACK(asize, 1));
+        ptr = NEXT_BLKP(ptr);
+        PUT(HDRP(ptr), PACK(csize - asize, 1));
+        PUT(FTRP(ptr), PACK(csize - asize, 1));
+    } else {
+        PUT(HDRP(ptr), PACK(csize, 1));
+        PUT(FTRP(ptr), PACK(csize, 1));
+    }
+}
+
+static void *coalesce(void *ptr) {
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(ptr)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
-    size = GET_SIZE(HDRP(ptr));
+    size_t size = GET_SIZE(HDRP(ptr));
     
     if (prev_alloc && next_alloc) {
         return ptr;
@@ -139,6 +140,73 @@ void mm_free(void *ptr)
         ptr = PREV_BLKP(ptr);
     }
     return ptr;
+}
+
+/*
+ * mm_init - initialize the malloc package.
+ */
+int mm_init(void)
+{
+    if ((heap_listp = mem_sbrk(4*WSIZE)) == (void *)-1) {
+        return -1;
+    }
+    PUT(heap_listp, 0);
+    PUT(heap_listp + (1*WSIZE), PACK(DSIZE, 1));
+    PUT(heap_listp + (2*WSIZE), PACK(DSIZE, 1));
+    PUT(heap_listp + (3*WSIZE), PACK(0, 1));
+    heap_listp += (2*WSIZE);
+    
+    /* extend the empty heap with a free block of CHUNKSIZE bytes */
+    if (extend_heap(CHUNKSIZE/WSIZE) == NULL)
+        return -1;
+    return 0;
+}
+
+/*
+ * mm_malloc - Allocate a block by incrementing the brk pointer.
+ *     Always allocate a block whose size is a multiple of the alignment.
+ */
+void *mm_malloc(size_t size)
+{
+    size_t asize; /* adjusted block size */
+    size_t extendsize; /* amount to extend heap if no fit */
+    char *ptr;
+    
+    /* ignore spurious requests */
+    if (size == 0) {
+        return NULL;
+    }
+    
+    /* adjust block size to include overhead and alignment requirements */
+    if (size <= DSIZE)
+        asize = 2 * DSIZE;
+    else
+        asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE);
+    
+    /* search the free list for a fit */
+    if ((ptr = find_fit(asize)) != NULL) {
+        place(ptr, asize);
+        return ptr;
+    }
+    
+    /* no fit found. get more memory and place block */
+    extendsize = MAX(asize, CHUNKSIZE);
+    if ((ptr = extend_heap(extendsize/WSIZE)) == NULL) {
+        return NULL;
+    }
+    place(ptr, asize);
+    return ptr;
+}
+
+/*
+ * mm_free - Freeing a block does nothing.
+ */
+void mm_free(void *ptr)
+{
+    size_t size = GET_SIZE(HDRP(ptr));
+    PUT(HDRP(ptr), PACK(size, 0));
+    PUT(FTRP(ptr), PACK(size, 0));
+    coalesce(ptr);
 }
 
 /*
