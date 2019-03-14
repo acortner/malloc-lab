@@ -23,6 +23,8 @@
  * provide your team information in the following struct.
  ********************************************************/
 team_t team = {
+    /* Team Name */
+    "The EECS 213 Failures",
     /* First member's full name */
     "Andrew Cortner",
     /* First member's NetID */
@@ -68,9 +70,17 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE)))
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE)))
 
+/* global variables */
 static char *heap_listp;
 
-static void *extend_heap(size_t words) {
+/* prototypes for helper methods */
+static void *coalesce(void *ptr);
+static void *extend_heap(size_t words);
+static void *find_fit(size_t asize);
+static void place(void *ptr, size_t asize);
+
+static void *extend_heap(size_t words)
+{
     char *ptr;
     size_t size;
     
@@ -117,7 +127,8 @@ static void place(void *ptr, size_t asize)
     }
 }
 
-static void *coalesce(void *ptr) {
+static void *coalesce(void *ptr)
+{
     size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(ptr)));
     size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(ptr)));
     size_t size = GET_SIZE(HDRP(ptr));
